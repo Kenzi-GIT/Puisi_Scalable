@@ -6,7 +6,8 @@ __pycache__/
 # Local database files
 *.db
 *.db-journal
-database/
+database/*
+!database/schema_mysql.sql
 
 # Editor / IDE
 .vscode/
