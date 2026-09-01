@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal Puisi - Aplikasi Web Monolitik Stateful</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Header & Navigasi -->
+    <header class="main-header">
+        <div class="container header-container">
+            <div class="brand">
+                <h1>Portal Puisi Scalable</h1>
+                <p class="subtitle">Aplikasi Web Monolitik Stateful Scalable</p>
+            </div>
+            <div id="user-profile-bar" class="user-profile-bar hidden">
+                <span>Halo, <strong id="user-display-name">-</strong>!</span>
+                <button id="btn-logout" class="btn btn-outline btn-sm">Keluar</button>
+            </div>
+        </div>
+    </header>
+
+
+    <main class="container main-content">
+        <!-- Alert Box -->
+        <div id="alert-box" class="alert-box hidden"></div>
+
+        <!-- 1. Area Autentikasi -->
+        <section id="auth-section" class="auth-section">
+            <div class="card auth-card">
+                <div class="auth-tabs">
+                    <button id="tab-login" class="tab-btn active">Masuk Akun</button>
+                    <button id="tab-register" class="tab-btn">Daftar Akun Baru</button>
+                </div>
+
+                <!-- Form Login -->
+                <form id="form-login" class="form-container">
+                    <h2>Masuk ke Sistem</h2>
+                    <p class="form-desc">Gunakan akun terdaftar untuk mengelola karya puisi.</p>
+                    
+                    <div class="form-group">
+                        <label for="login-username">Username</label>
+                        <input type="text" id="login-username" name="username" placeholder="Masukkan username" required autocomplete="username">
+                    </div>
+
+                    <div class="form-group">
+                        <label for="login-password">Password</label>
+                        <input type="password" id="login-password" name="password" placeholder="Masukkan password" required autocomplete="current-password">
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-block">Masuk</button>
+                    
+                    <div class="dummy-hint">
+                        <small>💡 <em>Akun Demo Awal: <code></code> / <code>password123</code></em></small>
+                    </div>
+                </form>
+
+                <!-- Form Register -->
+                <form id="form-register" class="form-container hidden">
+                    <h2>Registrasi Pengguna</h2>
+                    <p class="form-desc">Lengkapi data diri untuk membuat akun baru.</p>
+
+                    <div class="form-group">
+                        <label for="reg-username">Username</label>
+                        <input type="text" id="reg-username" name="username" placeholder="Pilih username unik" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="reg-nama">Nama Lengkap</label>
+                        <input type="text" id="reg-nama" name="nama" placeholder="Nama lengkap penulis" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="reg-noid">Nomor Identitas (No. ID)</label>
+                        <input type="text" id="reg-noid" name="no_id" placeholder="Contoh: ID-003 / NIM" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="reg-password">Password</label>
+                        <input type="password" id="reg-password" name="password" placeholder="Buat password yang aman" required autocomplete="new-password">
+                    </div>
+
+                    <button type="submit" class="btn btn-success btn-block">Daftar Sekarang</button>
+                </form>
+            </div>
+        </section>
+
+        <!-- 2. Area Dashboard -->
+        <section id="dashboard-section" class="dashboard-section hidden">
+            
+            <!-- Form Submit Puisi -->
+            <div class="card form-card">
+                <h2>✍️ Publikasikan Karya Puisi</h2>
+                <p class="form-desc">Tulis dan simpan karya puisi Anda ke dalam basis data.</p>
+                
+                <form id="form-puisi">
+                    <div class="form-row">
+                        <div class="form-group flex-2">
+                            <label for="puisi-judul">Judul Puisi</label>
+                            <input type="text" id="puisi-judul" name="judul" placeholder="Contoh: Derai-Derai Cemara" required>
+                        </div>
+                        <div class="form-group flex-1">
+                            <label for="puisi-kategori">Kategori</label>
+                            <select id="puisi-kategori" name="kategori" required>
+                                <option value="" disabled selected>Pilih Kategori</option>
+                                <option value="Puisi Bebas">Puisi Bebas</option>
+                                <option value="Romansa & Alam">Romansa & Alam</option>
+                                <option value="Sosial & Kritik">Sosial & Kritik</option>
+                                <option value="Spiritual & Religi">Spiritual & Religi</option>
+                                <option value="Lainnya">Lainnya</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="puisi-tgl-submit">Tanggal Submit</label>
+                        <input type="datetime-local" id="puisi-tgl-submit" name="tgl_submit" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="puisi-keyword">Kata Kunci (Keywords)</label>
+                        <input type="text" id="puisi-keyword" name="keyword" placeholder="Contoh: renungan, waktu, rindu" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="puisi-isi">Bait & Isi Puisi</label>
+                        <textarea id="puisi-isi" name="isi" rows="6" placeholder="Tuliskan bait-bait puisi di sini..." required></textarea>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">Simpan Karya Puisi</button>
+                </form>
+            </div>
+
+            <!-- Tabel Daftar Puisi -->
+            <div class="card table-card">
+                <div class="card-header-actions">
+                    <h2>📚 Koleksi Puisi Tersimpan</h2>
+                    <button id="btn-refresh-puisi" class="btn btn-secondary btn-sm">🔄 Muat Ulang Data</button>
+                </div>
+                
+                <div class="table-responsive">
+                    <table class="data-table" id="table-puisi">
+                        <thead>
+                            <tr>
+                                <th>No</th>
+                                <th>Tanggal Submit</th>
+                                <th>Judul Puisi</th>
+                                <th>Penulis</th>
+                                <th>Kategori</th>
+                                <th>Kata Kunci</th>
+                                <th>Isi Puisi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="puisi-tbody">
+                            <tr>
+                                <td colspan="7" class="text-center">Memuat daftar karya puisi...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+        <div class="container">
+            <p>&copy; 2026 Portal Puisi Stateful - Arsitektur Web Monolitik & Cloud Deployment</p>
+        </div>
+    </footer>
+
+    <script src="script.js"></script>
+</body>
+</html>
