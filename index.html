@@ -113,23 +113,36 @@
                             </select>
                         </div>
                     </div>
-
                     <div class="form-group">
                         <label for="puisi-tgl-submit">Tanggal Submit</label>
                         <input type="datetime-local" id="puisi-tgl-submit" name="tgl_submit" required>
                     </div>
-
                     <div class="form-group">
-                        <label for="puisi-keyword">Kata Kunci (Keywords)</label>
+                        <label for="puisi-keyword">Kata Kunci</label>
                         <input type="text" id="puisi-keyword" name="keyword" placeholder="Contoh: renungan, waktu, rindu" required>
                     </div>
-
                     <div class="form-group">
-                        <label for="puisi-isi">Bait & Isi Puisi</label>
-                        <textarea id="puisi-isi" name="isi" rows="6" placeholder="Tuliskan bait-bait puisi di sini..." required></textarea>
+                        <label for="puisi-isi">Isi Puisi</label>
+                        <textarea id="puisi-isi" name="isi" rows="6" placeholder="Tuliskan puisi lengkap di sini..." required></textarea>
                     </div>
-
-                    <button type="submit" class="btn btn-primary">Simpan Karya Puisi</button>
+                    <div class="form-group">
+                        <label for="puisi-kutipan">Bait/Kutipan untuk Gambar</label>
+                        <textarea id="puisi-kutipan" name="kutipan" rows="3" placeholder="Masukkan bait yang ingin ditampilkan pada gambar..." required></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="puisi-template">Template Gambar</label>
+                        <select id="puisi-template" name="template" required>
+                            <option value="senja">Senja</option>
+                            <option value="minimalis">Minimalis</option>
+                            <option value="alam">Alam</option>
+                        </select>
+                    </div>
+                    <div class="preview-wrap">
+                        <label>Preview Gambar Kutipan</label>
+                        <canvas id="puisi-preview" width="900" height="600" aria-label="Preview gambar kutipan puisi"></canvas>
+                        <small>Gambar preview akan disimpan bersama data puisi di penyimpanan lokal browser.</small>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="btn-submit-puisi">Simpan Karya Puisi</button>
                 </form>
             </div>
 
@@ -150,12 +163,12 @@
                                 <th>Penulis</th>
                                 <th>Kategori</th>
                                 <th>Kata Kunci</th>
-                                <th>Isi Puisi</th>
+                                <th>Isi Puisi</th>\n                                <th>Gambar</th>
                             </tr>
                         </thead>
                         <tbody id="puisi-tbody">
                             <tr>
-                                <td colspan="7" class="text-center">Memuat daftar karya puisi...</td>
+                                <td colspan="8" class="text-center">Memuat daftar karya puisi...</td>
                             </tr>
                         </tbody>
                     </table>

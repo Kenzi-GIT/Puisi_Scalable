@@ -375,3 +375,23 @@ textarea {
         align-items: flex-start;
     }
 }
+
+
+/* Form kutipan dan preview gambar */
+input[type="datetime-local"] {
+    width: 100%; padding: .65rem .85rem; font: inherit;
+    border: 1px solid var(--border-color); border-radius: 6px;
+}
+.preview-wrap { margin: 1rem 0 1.25rem; }
+.preview-wrap label { margin-bottom: .5rem; }
+#puisi-preview {
+    display: block; width: 100%; max-width: 600px; height: auto;
+    aspect-ratio: 3 / 2; border: 1px solid var(--border-color);
+    border-radius: 6px; background: #eee;
+}
+.preview-wrap small { display:block; color:var(--text-muted); margin-top:.4rem; }
+.data-table a { color: var(--primary); font-weight: 600; }
+@media (max-width: 768px) {
+    .card { padding: 1.25rem; }
+    .card-header-actions { align-items: flex-start; gap: .75rem; flex-direction: column; }
+}

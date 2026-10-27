@@ -1,49 +1,53 @@
-#!/usr/bin/env python3
-"""
-================================================================================
-Aplikasi Web Monolitik Stateful - Single-Path Routing Backend
-Sesuai Spesifikasi: Python Native dengan driver MySQL Connector
-Fitur:
-  - Single-Path Routing via query parameter (?aksi=...)
-  - Server-Side Local Session (In-Memory Session Store + Cookie HTTP)
-  - Database MySQL dengan relasi Foreign Key (ON DELETE CASCADE)
-  - Static File Server (HTML, CSS, JS)
-================================================================================
-"""
+from __future__ import annotations
 
-import http.server
-import socketserver
-import urllib.parse
-from http import cookies
-import json
-import mysql.connector
-from mysql.connector import IntegrityError
-import hashlib
-import uuid
+import base64
 import os
-import mimetypes
-import threading
-import webbrowser
-from datetime import datetime
+import re
+import secrets
+from datetime import datetime, timedelta
+from pathlib import Path
 
-# ================= Konfigurasi Global =================
-PORT = 8080
-HOST = "0.0.0.0"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_HOST = os.getenv("MYSQL_HOST", "localhost")
+import mysql.connector
+from flask import Flask, jsonify, make_response, request, send_from_directory
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from werkzeug.security import check_password_hash, generate_password_hash
+
+
+# ============================================================
+# PORTAL PUISI - MONOLITHIC BACKEND
+# Flask + MySQL + Stateless Signed Cookie
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+app = Flask(__name__, static_folder=None)
+
+APP_SECRET = os.getenv("APP_SECRET", "ubah-secret-key-portal-puisi")
+TOKEN_MAX_AGE = int(os.getenv("TOKEN_MAX_AGE", str(60 * 60 * 24)))
+
+DB_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
 DB_PORT = int(os.getenv("MYSQL_PORT", "3306"))
 DB_USER = os.getenv("MYSQL_USER", "root")
 DB_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
-DB_NAME = os.getenv("MYSQL_DATABASE", "db_puisi")
+DB_NAME = os.getenv("MYSQL_DATABASE", "portal_puisi")
 
-# In-Memory Server-Side Session Store
-# Format: { "session_id_uuid": { "user_id": 1, "username": "admin", "nama": "Admin", "login_at": "..." } }
-SESSIONS = {}
+serializer = URLSafeTimedSerializer(APP_SECRET, salt="portal-puisi-auth")
 
 
-# ================= Helper Database =================
-def get_db_connection():
-    """Membuka koneksi ke database MySQL aplikasi."""
+def db_server_connection():
+    """Koneksi ke MySQL server tanpa memilih database terlebih dahulu."""
+    return mysql.connector.connect(
+        host=DB_HOST,
+        port=DB_PORT,
+        user=DB_USER,
+        password=DB_PASSWORD,
+    )
+
+
+def db_connection():
+    """Koneksi ke database aplikasi."""
     return mysql.connector.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -54,463 +58,425 @@ def get_db_connection():
 
 
 def init_database():
-    """Inisialisasi database, tabel, dan data awal MySQL."""
-    print("[DATABASE] Memeriksa inisialisasi basis data MySQL...")
-    server_conn = mysql.connector.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-    )
-    server_cursor = server_conn.cursor()
-    server_cursor.execute(
+    """Membuat database dan tabel jika belum ada."""
+    conn = db_server_connection()
+    cursor = conn.cursor()
+    cursor.execute(
         f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}` "
         "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
     )
-    server_conn.commit()
-    server_cursor.close()
-    server_conn.close()
+    cursor.close()
+    conn.close()
 
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
+    conn = db_connection()
+    cursor = conn.cursor()
 
-    # Buat tabel jika belum ada
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50) NOT NULL UNIQUE,
-        password VARCHAR(255) NOT NULL,
-        nama VARCHAR(100) NOT NULL,
-        no_id VARCHAR(50) NOT NULL
-    );
-    """)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            username VARCHAR(100) NOT NULL UNIQUE,
+            nama VARCHAR(150) NOT NULL,
+            no_id VARCHAR(100) NOT NULL UNIQUE,
+            password_hash VARCHAR(255) NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
 
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS puisi (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        user_id INT NOT NULL,
-        judul VARCHAR(150) NOT NULL,
-        tgl_submit DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-        isi TEXT NOT NULL,
-        kategori VARCHAR(50) NOT NULL,
-        keyword VARCHAR(100) NOT NULL,
-        CONSTRAINT fk_puisi_users FOREIGN KEY (user_id) 
-            REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
-    );
-    """)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS puisi (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id INT NOT NULL,
+            judul VARCHAR(255) NOT NULL,
+            kategori VARCHAR(100) NOT NULL,
+            keyword VARCHAR(255) NOT NULL,
+            isi TEXT NOT NULL,
+            kutipan TEXT NOT NULL,
+            template VARCHAR(50) NOT NULL,
+            tgl_submit DATETIME NOT NULL,
+            image_filename VARCHAR(255) NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CONSTRAINT fk_puisi_user
+                FOREIGN KEY (user_id) REFERENCES users(id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+    )
 
-    # Masukkan data dummy jika tabel users masih kosong
-    cursor.execute("SELECT COUNT(*) as count FROM users;")
-    if cursor.fetchone()["count"] == 0:
-        default_pwd = hashlib.sha256("password123".encode("utf-8")).hexdigest()
+    # Akun demo agar halaman yang sudah menyediakan hint demo langsung dapat dipakai.
+    cursor.execute(
+        "SELECT id FROM users WHERE username = %s LIMIT 1",
+        ("chairil_anwar",),
+    )
+    if cursor.fetchone() is None:
         cursor.execute(
-            "INSERT INTO users (username, password, nama, no_id) VALUES (%s, %s, %s, %s)",
-            ("chairil_anwar", default_pwd, "Chairil Anwar", "ID-001")
+            """
+            INSERT INTO users (username, nama, no_id, password_hash)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                "chairil_anwar",
+                "Chairil Anwar",
+                "DEMO-001",
+                generate_password_hash("password123"),
+            ),
         )
-        cursor.execute(
-            "INSERT INTO users (username, password, nama, no_id) VALUES (%s, %s, %s, %s)",
-            ("sapardi_djoko", default_pwd, "Sapardi Djoko Damono", "ID-002")
-        )
-        cursor.execute(
-            "INSERT INTO puisi (user_id, judul, isi, kategori, keyword) VALUES (%s, %s, %s, %s, %s)",
-            (1, "Aku", "Kalau sampai waktuku\nKu mau tak seorang kan merayu\nTidak juga kau\n\nTak perlu sedu sedan itu\n\nAku ini binatang jalang\nDari kumpulannya terbuang...", "Puisi Bebas", "perjuangan, semangat, eksistensial")
-        )
-        cursor.execute(
-            "INSERT INTO puisi (user_id, judul, isi, kategori, keyword) VALUES (%s, %s, %s, %s, %s)",
-            (2, "Hujan Bulan Juni", "Tak ada yang lebih tabah\ndari hujan bulan juni\ndirahasiakannya rintik rindunya\nkepada pohon berbunga itu...", "Romansa & Alam", "rindu, ketabahan, hujan")
-        )
-        print("[DATABASE] Data awal dummy berhasil diisikan.")
 
     conn.commit()
+    cursor.close()
     conn.close()
-    print("[DATABASE] Inisialisasi basis data selesai.")
 
 
-def hash_password(password: str) -> str:
-    """Mengamankan password menggunakan hashing SHA-256."""
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+def json_error(message: str, status: int = 400):
+    return jsonify({"status": "error", "message": message}), status
 
 
-# ================= Request Handler =================
-class StatefulAppHandler(http.server.BaseHTTPRequestHandler):
+def get_json_body() -> dict:
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
 
-    def log_message(self, format, *args):
-        """Kustomisasi format log request di terminal."""
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {self.address_string()} - {format % args}")
 
-    # --------- Helper Sesi Server-Side & Cookie ---------
-    def get_session(self):
-        """Membaca cookie session_id dari request dan mencocokkan ke Server-Side SESSIONS."""
-        cookie_header = self.headers.get("Cookie")
-        if not cookie_header:
-            return None, None
-        
-        cookie = cookies.SimpleCookie()
+def create_auth_token(user: dict) -> str:
+    # Token berisi identitas minimal user dan ditandatangani.
+    # Server tidak perlu menyimpan session state.
+    payload = {
+        "user_id": user["id"],
+        "username": user["username"],
+        "nama": user["nama"],
+        "exp": int((datetime.utcnow() + timedelta(seconds=TOKEN_MAX_AGE)).timestamp()),
+    }
+    return serializer.dumps(payload)
+
+
+def get_current_user():
+    token = request.cookies.get("auth_token")
+    if not token:
+        return None
+
+    try:
+        payload = serializer.loads(token, max_age=TOKEN_MAX_AGE)
+    except (BadSignature, SignatureExpired):
+        return None
+
+    user_id = payload.get("user_id")
+    if not user_id:
+        return None
+
+    conn = db_connection()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute(
+        "SELECT id, username, nama, no_id FROM users WHERE id = %s LIMIT 1",
+        (user_id,),
+    )
+    user = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return user
+
+
+def set_auth_cookie(response, user: dict):
+    response.set_cookie(
+        "auth_token",
+        create_auth_token(user),
+        httponly=True,
+        secure=False,  # Ubah menjadi True saat memakai HTTPS.
+        samesite="Lax",
+        max_age=TOKEN_MAX_AGE,
+        path="/",
+    )
+    return response
+
+
+def validate_required(data: dict, fields: list[str]):
+    missing = [field for field in fields if not str(data.get(field, "")).strip()]
+    return missing
+
+
+def safe_filename(filename: str) -> str:
+    filename = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    return filename[:180] or "puisi.png"
+
+
+def save_canvas_image(image_data: str | None) -> str | None:
+    """Menyimpan data URL PNG dari canvas sebagai file lokal dan mengembalikan nama file."""
+    if not image_data:
+        return None
+
+    if not isinstance(image_data, str) or not image_data.startswith("data:image/png;base64,"):
+        raise ValueError("Format gambar harus berupa PNG data URL.")
+
+    encoded = image_data.split(",", 1)[1]
+    raw = base64.b64decode(encoded, validate=True)
+
+    if len(raw) > 5 * 1024 * 1024:
+        raise ValueError("Ukuran gambar terlalu besar. Maksimum 5 MB.")
+
+    filename = safe_filename(f"puisi_{secrets.token_hex(12)}.png")
+    (UPLOAD_DIR / filename).write_bytes(raw)
+    return filename
+
+
+# ============================================================
+# FRONTEND
+# ============================================================
+
+@app.get("/")
+def index():
+    return send_from_directory(BASE_DIR, "index.html")
+
+
+@app.get("/script.js")
+def script_js():
+    return send_from_directory(BASE_DIR, "script.js")
+
+
+@app.get("/style.css")
+def style_css():
+    return send_from_directory(BASE_DIR, "style.css")
+
+
+@app.get("/uploads/<path:filename>")
+def uploaded_file(filename):
+    return send_from_directory(UPLOAD_DIR, filename)
+
+
+# ============================================================
+# SINGLE-PATH API
+# Tetap mempertahankan pola app.py?aksi=...
+# ============================================================
+
+@app.route("/app.py", methods=["GET", "POST"])
+def api():
+    aksi = request.args.get("aksi", "").strip().lower()
+
+    if aksi == "check_session" and request.method == "GET":
+        user = get_current_user()
+        if not user:
+            return jsonify({"authenticated": False})
+
+        return jsonify({"authenticated": True, "user": user})
+
+    if aksi == "register" and request.method == "POST":
+        data = get_json_body()
+        missing = validate_required(data, ["username", "nama", "no_id", "password"])
+        if missing:
+            return json_error("Semua data registrasi wajib diisi.")
+
+        username = str(data["username"]).strip()
+        nama = str(data["nama"]).strip()
+        no_id = str(data["no_id"]).strip()
+        password = str(data["password"])
+
+        if len(username) < 3:
+            return json_error("Username minimal 3 karakter.")
+        if len(password) < 6:
+            return json_error("Password minimal 6 karakter.")
+
+        conn = db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        cursor.execute(
+            "SELECT id FROM users WHERE username = %s OR no_id = %s LIMIT 1",
+            (username, no_id),
+        )
+        existing = cursor.fetchone()
+
+        if existing:
+            cursor.close()
+            conn.close()
+            return json_error("Username atau nomor identitas sudah terdaftar.", 409)
+
+        cursor.execute(
+            """
+            INSERT INTO users (username, nama, no_id, password_hash)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (username, nama, no_id, generate_password_hash(password)),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        return jsonify({
+            "status": "success",
+            "message": "Registrasi berhasil. Silakan login.",
+        }), 201
+
+    if aksi == "login" and request.method == "POST":
+        data = get_json_body()
+        username = str(data.get("username", "")).strip()
+        password = str(data.get("password", ""))
+
+        if not username or not password:
+            return json_error("Username dan password wajib diisi.")
+
+        conn = db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT id, username, nama, no_id, password_hash
+            FROM users
+            WHERE username = %s
+            LIMIT 1
+            """,
+            (username,),
+        )
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if not user or not check_password_hash(user["password_hash"], password):
+            return json_error("Username atau password salah.", 401)
+
+        public_user = {
+            "id": user["id"],
+            "username": user["username"],
+            "nama": user["nama"],
+            "no_id": user["no_id"],
+        }
+
+        response = make_response(jsonify({
+            "status": "success",
+            "message": "Login berhasil.",
+            "user": public_user,
+        }))
+        return set_auth_cookie(response, public_user)
+
+    if aksi == "logout" and request.method == "POST":
+        response = make_response(jsonify({
+            "status": "success",
+            "message": "Logout berhasil.",
+        }))
+        response.delete_cookie("auth_token", path="/")
+        return response
+
+    if aksi == "submit_puisi" and request.method == "POST":
+        user = get_current_user()
+        if not user:
+            return json_error("Sesi tidak valid. Silakan login kembali.", 401)
+
+        data = get_json_body()
+        required = [
+            "judul",
+            "kategori",
+            "keyword",
+            "isi",
+            "tgl_submit",
+            "kutipan",
+            "template",
+        ]
+        missing = validate_required(data, required)
+        if missing:
+            return json_error("Semua kolom puisi wajib diisi.")
+
+        judul = str(data["judul"]).strip()
+        kategori = str(data["kategori"]).strip()
+        keyword = str(data["keyword"]).strip()
+        isi = str(data["isi"]).strip()
+        kutipan = str(data["kutipan"]).strip()
+        template = str(data["template"]).strip()
+        tgl_submit_raw = str(data["tgl_submit"]).strip()
+
         try:
-            cookie.load(cookie_header)
-        except Exception:
-            return None, None
-
-        if "session_id" in cookie:
-            sid = cookie["session_id"].value
-            if sid in SESSIONS:
-                return sid, SESSIONS[sid]
-        return None, None
-
-    def send_json_response(self, data, status_code=200, set_cookie_sid=None, clear_cookie=False):
-        """Mengirim response JSON beserta header Session Cookie jika ada."""
-        json_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(json_bytes)))
-        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
-        
-        # Pengaturan Cookie Sesi
-        if set_cookie_sid:
-            # HttpOnly untuk keamanan, Path=/ agar berlaku di seluruh halaman
-            self.send_header("Set-Cookie", f"session_id={set_cookie_sid}; Path=/; HttpOnly; SameSite=Lax")
-        elif clear_cookie:
-            self.send_header("Set-Cookie", "session_id=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly")
-            
-        self.end_headers()
-        self.wfile.write(json_bytes)
-
-    def read_request_body(self):
-        """Membaca dan mem-parsing body request (JSON atau Form URL Encoded)."""
-        content_length = int(self.headers.get("Content-Length", 0))
-        if content_length == 0:
-            return {}
-        
-        body_raw = self.rfile.read(content_length).decode("utf-8")
-        content_type = self.headers.get("Content-Type", "")
-
-        if "application/json" in content_type:
-            try:
-                return json.loads(body_raw)
-            except json.JSONDecodeError:
-                return {}
-        else:
-            # Parse form urlencoded
-            parsed = urllib.parse.parse_qs(body_raw)
-            return {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
-
-    # --------- Static File Serving ---------
-    def serve_static_file(self, filepath):
-        """Melayani file statis HTML, CSS, JS dari direktori proyek."""
-        # Hilangkan query string dan normalize path
-        clean_path = filepath.split("?")[0].lstrip("/")
-        if clean_path == "" or clean_path == "index.html":
-            clean_path = "index.html"
-
-        full_path = os.path.join(BASE_DIR, clean_path)
-
-        # Keamanan: cegah directory traversal
-        if not os.path.abspath(full_path).startswith(BASE_DIR):
-            self.send_error(403, "Akses Ditolak")
-            return
-
-        if not os.path.isfile(full_path):
-            self.send_error(404, "File Tidak Ditemukan")
-            return
-
-        mime_type, _ = mimetypes.guess_type(full_path)
-        if not mime_type:
-            mime_type = "application/octet-stream"
+            tgl_submit = datetime.fromisoformat(tgl_submit_raw)
+        except ValueError:
+            return json_error("Format tanggal submit tidak valid.")
 
         try:
-            with open(full_path, "rb") as f:
-                content = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", f"{mime_type}; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-        except Exception as e:
-            self.send_error(500, f"Gagal membaca file: {str(e)}")
+            image_filename = save_canvas_image(data.get("image_data"))
+        except (ValueError, base64.binascii.Error):
+            return json_error("Gambar preview tidak valid atau terlalu besar.")
 
-    # --------- Router Utama (Single-Path Routing) ---------
-    def do_GET(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        aksi = query_params.get("aksi", [None])[0]
+        conn = db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO puisi
+                (user_id, judul, kategori, keyword, isi, kutipan, template,
+                 tgl_submit, image_filename)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                user["id"],
+                judul,
+                kategori,
+                keyword,
+                isi,
+                kutipan,
+                template,
+                tgl_submit.strftime("%Y-%m-%d %H:%M:%S"),
+                image_filename,
+            ),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
 
-        # 1. Routing API berdasarkan ?aksi=...
-        if aksi or parsed_url.path.endswith("app.py") or parsed_url.path.endswith("server.php"):
-            self.handle_api_get(aksi)
-            return
+        return jsonify({
+            "status": "success",
+            "message": "Puisi berhasil disimpan ke database.",
+        }), 201
 
-        # 2. Routing File Statis (index.html, style.css, script.js)
-        self.serve_static_file(parsed_url.path)
+    if aksi == "daftar_puisi" and request.method == "GET":
+        user = get_current_user()
+        if not user:
+            return json_error("Sesi tidak valid. Silakan login kembali.", 401)
 
-    def do_POST(self):
-        parsed_url = urllib.parse.urlparse(self.path)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        aksi = query_params.get("aksi", [None])[0]
+        conn = db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            """
+            SELECT
+                p.id,
+                DATE_FORMAT(p.tgl_submit, '%Y-%m-%d %H:%i') AS tgl_submit,
+                p.judul,
+                u.nama AS penulis,
+                p.kategori,
+                p.keyword,
+                p.isi,
+                p.kutipan,
+                p.template,
+                p.image_filename
+            FROM puisi p
+            INNER JOIN users u ON u.id = p.user_id
+            WHERE p.user_id = %s
+            ORDER BY p.tgl_submit DESC, p.id DESC
+            """,
+            (user["id"],),
+        )
+        rows = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-        self.handle_api_post(aksi)
-
-    # --------- Handler Aksi GET ---------
-    def handle_api_get(self, aksi):
-        sid, session_data = self.get_session()
-
-        # Aksi 1: Cek Status Sesi Aktif
-        if aksi == "check_session":
-            if session_data:
-                self.send_json_response({
-                    "status": "success",
-                    "authenticated": True,
-                    "user": {
-                        "id": session_data["user_id"],
-                        "username": session_data["username"],
-                        "nama": session_data["nama"]
-                    }
-                })
+        for row in rows:
+            if row.get("image_filename"):
+                row["gambar_url"] = f"/uploads/{row['image_filename']}"
             else:
-                self.send_json_response({
-                    "status": "error",
-                    "authenticated": False,
-                    "message": "Sesi tidak ditemukan atau telah kedaluwarsa"
-                })
-            return
+                row["gambar_url"] = None
 
-        # Aksi 2: Ambil Daftar Puisi
-        elif aksi == "daftar_puisi":
-            if not session_data:
-                self.send_json_response({
-                    "status": "error",
-                    "message": "Akses ditolak: Anda harus login terlebih dahulu"
-                }, status_code=401)
-                return
+        return jsonify({
+            "status": "success",
+            "data": rows,
+        })
 
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute("""
-                    SELECT p.id, p.user_id, p.judul, p.tgl_submit, p.isi, p.kategori, p.keyword, u.nama AS penulis
-                    FROM puisi p
-                    JOIN users u ON p.user_id = u.id
-                    ORDER BY p.id DESC;
-                """)
-                rows = cursor.fetchall()
-                puisi_list = []
-                for row in rows:
-                    puisi = dict(row)
-                    if isinstance(puisi.get("tgl_submit"), datetime):
-                        puisi["tgl_submit"] = puisi["tgl_submit"].strftime("%Y-%m-%d %H:%M:%S")
-                    puisi_list.append(puisi)
-                conn.close()
-
-                self.send_json_response({
-                    "status": "success",
-                    "data": puisi_list
-                })
-            except Exception as e:
-                self.send_json_response({"status": "error", "message": f"Database error: {str(e)}"}, status_code=500)
-            return
-
-        # Aksi 3: Logout via GET
-        elif aksi == "logout":
-            if sid and sid in SESSIONS:
-                del SESSIONS[sid]
-            self.send_json_response({"status": "success", "message": "Logout berhasil"}, clear_cookie=True)
-            return
-
-        else:
-            self.send_json_response({
-                "status": "error",
-                "message": f"Aksi GET '{aksi}' tidak dikenali"
-            }, status_code=400)
-
-    # --------- Handler Aksi POST ---------
-    def handle_api_post(self, aksi):
-        body = self.read_request_body()
-        sid, session_data = self.get_session()
-
-        # Aksi 1: Registrasi User Baru
-        if aksi == "register":
-            username = str(body.get("username", "")).strip()
-            password = str(body.get("password", "")).strip()
-            nama = str(body.get("nama", "")).strip()
-            no_id = str(body.get("no_id", "")).strip()
-
-            if not username or not password or not nama or not no_id:
-                self.send_json_response({
-                    "status": "error",
-                    "message": "Semua field (username, password, nama, no_id) wajib diisi!"
-                }, status_code=400)
-                return
-
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                pwd_hashed = hash_password(password)
-
-                cursor.execute(
-                    "INSERT INTO users (username, password, nama, no_id) VALUES (%s, %s, %s, %s)",
-                    (username, pwd_hashed, nama, no_id)
-                )
-                conn.commit()
-                conn.close()
-
-                self.send_json_response({
-                    "status": "success",
-                    "message": "Registrasi berhasil! Silakan masuk dengan akun Anda."
-                }, status_code=201)
-            except IntegrityError:
-                self.send_json_response({
-                    "status": "error",
-                    "message": f"Username '{username}' sudah terdaftar. Gunakan username lain."
-                }, status_code=409)
-            except Exception as e:
-                self.send_json_response({"status": "error", "message": f"Server error: {str(e)}"}, status_code=500)
-            return
-
-        # Aksi 2: Login User & Inisialisasi Sesi Server-Side
-        elif aksi == "login":
-            username = str(body.get("username", "")).strip()
-            password = str(body.get("password", "")).strip()
-
-            if not username or not password:
-                self.send_json_response({
-                    "status": "error",
-                    "message": "Username dan password wajib diisi!"
-                }, status_code=400)
-                return
-
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                pwd_hashed = hash_password(password)
-
-                cursor.execute(
-                    "SELECT id, username, nama, no_id FROM users WHERE username = %s AND password = %s",
-                    (username, pwd_hashed)
-                )
-                user = cursor.fetchone()
-                conn.close()
-
-                if user:
-                    # Buat UUID untuk Session ID
-                    new_session_id = str(uuid.uuid4())
-                    # Simpan data user ke RAM server
-                    SESSIONS[new_session_id] = {
-                        "user_id": user["id"],
-                        "username": user["username"],
-                        "nama": user["nama"],
-                        "no_id": user["no_id"],
-                        "login_at": datetime.now().isoformat()
-                    }
-
-                    print(f"[SESSION] Sesi aktif baru dibuat untuk user: {user['username']} (SID: {new_session_id})")
-
-                    self.send_json_response({
-                        "status": "success",
-                        "message": f"Selamat datang kembali, {user['nama']}!",
-                        "user": {
-                            "id": user["id"],
-                            "username": user["username"],
-                            "nama": user["nama"]
-                        }
-                    }, set_cookie_sid=new_session_id)
-                else:
-                    self.send_json_response({
-                        "status": "error",
-                        "message": "Kombinasi username atau password salah!"
-                    }, status_code=401)
-            except Exception as e:
-                self.send_json_response({"status": "error", "message": f"Server error: {str(e)}"}, status_code=500)
-            return
-
-        # Aksi 3: Submit Puisi Baru (Terproteksi Sesi)
-        elif aksi == "submit_puisi":
-            if not session_data:
-                self.send_json_response({
-                    "status": "error",
-                    "message": "Akses ditolak: Silakan login terlebih dahulu untuk mengirim puisi."
-                }, status_code=401)
-                return
-
-            judul = str(body.get("judul", "")).strip()
-            isi = str(body.get("isi", "")).strip()
-            kategori = str(body.get("kategori", "")).strip()
-            keyword = str(body.get("keyword", "")).strip()
-            tgl_submit = str(body.get("tgl_submit", "")).strip()
-
-            if not judul or not isi or not kategori or not keyword or not tgl_submit:
-                self.send_json_response({
-                    "status": "error",
-                    "message": "Semua kolom puisi (judul, isi, tgl submit, kategori, keyword) wajib diisi!"
-                }, status_code=400)
-                return
-
-            try:
-                tgl_submit = datetime.fromisoformat(tgl_submit).strftime("%Y-%m-%d %H:%M:%S")
-                conn = get_db_connection()
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute(
-                    "INSERT INTO puisi (user_id, judul, tgl_submit, isi, kategori, keyword) "
-                    "VALUES (%s, %s, %s, %s, %s, %s)",
-                    (session_data["user_id"], judul, tgl_submit, isi, kategori, keyword)
-                )
-                conn.commit()
-                new_id = cursor.lastrowid
-                conn.close()
-
-                print(f"[PUISI] Puisi baru ID={new_id} berhasil dibuat oleh user_id={session_data['user_id']}")
-
-                self.send_json_response({
-                    "status": "success",
-                    "message": "Karya puisi berhasil disimpan!",
-                    "id": new_id
-                }, status_code=201)
-            except ValueError:
-                self.send_json_response({
-                    "status": "error",
-                    "message": "Format tanggal submit tidak valid."
-                }, status_code=400)
-            except Exception as e:
-                self.send_json_response({"status": "error", "message": f"Database error: {str(e)}"}, status_code=500)
-            return
-
-        # Aksi 4: Logout (POST)
-        elif aksi == "logout":
-            if sid and sid in SESSIONS:
-                print(f"[SESSION] Menghapus sesi {sid} untuk user: {SESSIONS[sid].get('username')}")
-                del SESSIONS[sid]
-            self.send_json_response({"status": "success", "message": "Logout berhasil"}, clear_cookie=True)
-            return
-
-        else:
-            self.send_json_response({
-                "status": "error",
-                "message": f"Aksi POST '{aksi}' tidak dikenali"
-            }, status_code=400)
+    return json_error("Aksi tidak dikenal.", 404)
 
 
-# ================= Server Runner =================
+@app.errorhandler(mysql.connector.Error)
+def handle_mysql_error(error):
+    app.logger.exception("MySQL error")
+    return jsonify({
+        "status": "error",
+        "message": "Terjadi masalah saat mengakses database MySQL.",
+    }), 500
+
+
 if __name__ == "__main__":
     init_database()
-    
-    # Memastikan socket reuse address agar tidak error 'Address already in use' saat restart cepat
-    socketserver.TCPServer.allow_reuse_address = True
-    
-    with socketserver.TCPServer((HOST, PORT), StatefulAppHandler) as httpd:
-        print("=" * 65)
-        print("[SERVER] SERVER MONOLITIK STATEFUL BERJALAN")
-        print(f"[SERVER] Akses Lokal : http://localhost:{PORT}")
-        print(f"[SERVER] Single-Path : http://localhost:{PORT}/app.py?aksi=...")
-        print(f"[SERVER] Database    : MySQL {DB_NAME}@{DB_HOST}:{DB_PORT}")
-        print("[SERVER] Tekan CTRL + C untuk menghentikan server")
-        print("=" * 65)
-        # Membuka aplikasi di browser setelah server aktif
-        threading.Timer(
-            1.0,
-            lambda: webbrowser.open(f"http://localhost:{PORT}", new=2)
-        ).start()
-
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            print("\n[SERVER] Server dihentikan oleh pengguna.")
-            httpd.server_close()
+    print("============================================")
+    print(" Portal Puisi - Monolithic Flask + MySQL")
+    print(" http://127.0.0.1:5000")
+    print("============================================")
+    app.run(host="127.0.0.1", port=5000, debug=True)

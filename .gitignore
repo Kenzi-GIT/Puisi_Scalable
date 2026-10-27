@@ -13,3 +13,12 @@ database/*
 .vscode/
 .idea/
 .DS_Store
+
+# Dependencies & build artifacts
+node_modules/
+lambda-package/
+*.zip
+
+# Env
+.env
+.env.*

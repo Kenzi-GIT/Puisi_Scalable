@@ -1,14 +1,11 @@
-/**
- * ==========================================================================
- * Logika Frontend (Vanilla JavaScript / Pure Fetch API)
- * Menangani Single-Path Routing Backend & Otomatisasi Session Cookie
- * ==========================================================================
- */
+// ============================================================
+// PORTAL PUISI
+// Vanilla JavaScript + localStorage
+// Tidak membutuhkan backend atau MySQL
+// ============================================================
 
-// Target Endpoint Single-Path Routing
-const BACKEND_URL = "app.py";
+// ================= DOM ELEMENTS =================
 
-// Elemen DOM
 const alertBox = document.getElementById("alert-box");
 const authSection = document.getElementById("auth-section");
 const dashboardSection = document.getElementById("dashboard-section");
@@ -17,26 +14,60 @@ const userDisplayName = document.getElementById("user-display-name");
 
 const tabLogin = document.getElementById("tab-login");
 const tabRegister = document.getElementById("tab-register");
+
 const formLogin = document.getElementById("form-login");
 const formRegister = document.getElementById("form-register");
 const formPuisi = document.getElementById("form-puisi");
+
 const puisiTbody = document.getElementById("puisi-tbody");
 
 const btnLogout = document.getElementById("btn-logout");
 const btnRefreshPuisi = document.getElementById("btn-refresh-puisi");
 const puisiTglSubmit = document.getElementById("puisi-tgl-submit");
 
-// Isi tanggal submit dengan waktu lokal saat form pertama kali dibuka.
+
+// ================= LOCAL STORAGE =================
+
+const STORAGE_USERS = "portal_puisi_users";
+const STORAGE_POEMS = "portal_puisi_poems";
+const STORAGE_SESSION = "portal_puisi_session";
+
+
+// Mengambil data dari localStorage
+function getStorage(key, defaultValue = []) {
+    try {
+        const data = localStorage.getItem(key);
+        return data ? JSON.parse(data) : defaultValue;
+    } catch (error) {
+        console.error(`Gagal membaca ${key}:`, error);
+        return defaultValue;
+    }
+}
+
+
+// Menyimpan data ke localStorage
+function saveStorage(key, data) {
+    localStorage.setItem(key, JSON.stringify(data));
+}
+
+
+// ================= TANGGAL =================
+
 function setDefaultSubmitDate() {
+    if (!puisiTglSubmit) return;
+
     const now = new Date();
     now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+
     puisiTglSubmit.value = now.toISOString().slice(0, 16);
 }
 
-setDefaultSubmitDate();
 
-// ================= Helper Notifikasi =================
+// ================= NOTIFIKASI =================
+
 function showAlert(message, type = "info", durationMs = 4500) {
+    if (!alertBox) return;
+
     alertBox.className = `alert-box alert-${type}`;
     alertBox.textContent = message;
     alertBox.classList.remove("hidden");
@@ -48,12 +79,21 @@ function showAlert(message, type = "info", durationMs = 4500) {
     }
 }
 
+
 function hideAlert() {
-    alertBox.classList.add("hidden");
+    if (alertBox) {
+        alertBox.classList.add("hidden");
+    }
 }
 
+
+// ================= KEAMANAN TAMPILAN =================
+
 function escapeHtml(text) {
-    if (!text) return "";
+    if (text === null || text === undefined) {
+        return "";
+    }
+
     return String(text)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
@@ -62,244 +102,364 @@ function escapeHtml(text) {
         .replace(/'/g, "&#039;");
 }
 
-// ================= Manajemen Tampilan Sesi =================
+
+// ================= MANAJEMEN SESI =================
+
+function getCurrentUser() {
+    return getStorage(STORAGE_SESSION, null);
+}
+
+
 function setAuthenticatedState(user) {
+    if (!user) return;
+
     authSection.classList.add("hidden");
     dashboardSection.classList.remove("hidden");
     userProfileBar.classList.remove("hidden");
+
     userDisplayName.textContent = user.nama || user.username;
-    
-    // Muat daftar puisi setelah login sukses
+
     loadDaftarPuisi();
 }
+
 
 function setUnauthenticatedState() {
     authSection.classList.remove("hidden");
     dashboardSection.classList.add("hidden");
     userProfileBar.classList.add("hidden");
+
     userDisplayName.textContent = "-";
-    puisiTbody.innerHTML = '<tr><td colspan="7" class="text-center">Silakan masuk untuk melihat daftar karya puisi.</td></tr>';
+
+    if (puisiTbody) {
+        puisiTbody.innerHTML = `
+            <tr>
+                <td colspan="7" class="text-center">
+                    Silakan masuk untuk melihat daftar karya puisi.
+                </td>
+            </tr>
+        `;
+    }
 }
 
-// ================= Tab Navigasi Auth =================
+
+// Memeriksa sesi yang tersimpan di browser
+function checkSession() {
+    const user = getCurrentUser();
+
+    if (user) {
+        setAuthenticatedState(user);
+    } else {
+        setUnauthenticatedState();
+    }
+}
+
+
+// ================= TAB LOGIN DAN REGISTER =================
+
 tabLogin.addEventListener("click", () => {
     tabLogin.classList.add("active");
     tabRegister.classList.remove("active");
+
     formLogin.classList.remove("hidden");
     formRegister.classList.add("hidden");
+
     hideAlert();
 });
+
 
 tabRegister.addEventListener("click", () => {
     tabRegister.classList.add("active");
     tabLogin.classList.remove("active");
+
     formRegister.classList.remove("hidden");
     formLogin.classList.add("hidden");
+
     hideAlert();
 });
 
-// ================= API Calls (Fetch API Native) =================
 
-/**
- * 1. Cek Sesi saat halaman pertama kali dibuka
- */
-async function checkSession() {
-    try {
-        const response = await fetch(`${BACKEND_URL}?aksi=check_session`, {
-            method: "GET",
-            credentials: "include" // Mengirim dan menerima cookie sesi browser
-        });
+// ================= REGISTRASI =================
 
-        const result = await response.json();
-        if (result.authenticated && result.user) {
-            setAuthenticatedState(result.user);
-        } else {
-            setUnauthenticatedState();
-        }
-    } catch (err) {
-        console.error("Gagal memeriksa sesi:", err);
+formRegister.addEventListener("submit", (e) => {
+    e.preventDefault();
+    hideAlert();
+
+    const username = document
+        .getElementById("reg-username")
+        .value.trim();
+
+    const nama = document
+        .getElementById("reg-nama")
+        .value.trim();
+
+    const no_id = document
+        .getElementById("reg-noid")
+        .value.trim();
+
+    const password = document
+        .getElementById("reg-password")
+        .value;
+
+    // Validasi input
+    if (!username || !nama || !no_id || !password) {
+        showAlert("Semua kolom registrasi wajib diisi.", "error");
+        return;
+    }
+
+    const users = getStorage(STORAGE_USERS);
+
+    // Memeriksa apakah username sudah digunakan
+    const usernameExists = users.some(
+        user => user.username.toLowerCase() === username.toLowerCase()
+    );
+
+    if (usernameExists) {
+        showAlert("Username sudah digunakan.", "error");
+        return;
+    }
+
+    // Memeriksa apakah nomor identitas sudah digunakan
+    const idExists = users.some(
+        user => user.no_id === no_id
+    );
+
+    if (idExists) {
+        showAlert("Nomor identitas sudah terdaftar.", "error");
+        return;
+    }
+
+    // Menyimpan pengguna baru
+    const newUser = {
+        id: Date.now(),
+        username: username,
+        nama: nama,
+        no_id: no_id,
+        password: password
+    };
+
+    users.push(newUser);
+    saveStorage(STORAGE_USERS, users);
+
+    showAlert("Registrasi berhasil. Silakan login.", "success");
+
+    formRegister.reset();
+
+    // Kembali ke tab login
+    tabLogin.click();
+
+    document.getElementById("login-username").value = username;
+    document.getElementById("login-password").focus();
+});
+
+
+// ================= LOGIN =================
+
+formLogin.addEventListener("submit", (e) => {
+    e.preventDefault();
+    hideAlert();
+
+    const username = document
+        .getElementById("login-username")
+        .value.trim();
+
+    const password = document
+        .getElementById("login-password")
+        .value;
+
+    const users = getStorage(STORAGE_USERS);
+
+    // Mencari pengguna berdasarkan username dan password
+    const user = users.find(
+        item =>
+            item.username.toLowerCase() === username.toLowerCase() &&
+            item.password === password
+    );
+
+    if (!user) {
+        showAlert(
+            "Username atau password salah.",
+            "error"
+        );
+        return;
+    }
+
+    // Menyimpan sesi login
+    const session = {
+        id: user.id,
+        username: user.username,
+        nama: user.nama,
+        no_id: user.no_id
+    };
+
+    saveStorage(STORAGE_SESSION, session);
+
+    showAlert("Login berhasil. Selamat datang!", "success");
+
+    formLogin.reset();
+
+    setAuthenticatedState(session);
+});
+
+
+// ================= SUBMIT PUISI =================
+
+formPuisi.addEventListener("submit", (e) => {
+    e.preventDefault();
+    hideAlert();
+
+    const user = getCurrentUser();
+
+    if (!user) {
+        showAlert("Silakan login terlebih dahulu.", "error");
         setUnauthenticatedState();
+        return;
     }
-}
 
-/**
- * 2. Aksi: Login Pengguna
- */
-formLogin.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    hideAlert();
+    const judul = document
+        .getElementById("puisi-judul")
+        .value.trim();
 
-    const username = document.getElementById("login-username").value.trim();
-    const password = document.getElementById("login-password").value;
+    const kategori = document
+        .getElementById("puisi-kategori")
+        .value;
 
-    try {
-        const response = await fetch(`${BACKEND_URL}?aksi=login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ username, password })
-        });
+    const keyword = document
+        .getElementById("puisi-keyword")
+        .value.trim();
 
-        const result = await response.json();
+    const isi = document
+        .getElementById("puisi-isi")
+        .value.trim();
 
-        if (response.ok && result.status === "success") {
-            showAlert(result.message, "success");
-            formLogin.reset();
-            setAuthenticatedState(result.user);
-        } else {
-            showAlert(result.message || "Gagal masuk. Periksa kembali akun Anda.", "error");
-        }
-    } catch (err) {
-        showAlert("Terjadi kesalahan koneksi ke server.", "error");
-        console.error("Login error:", err);
+    const tgl_submit = puisiTglSubmit.value;
+
+    // Validasi data puisi
+    if (!judul || !kategori || !keyword || !isi || !tgl_submit) {
+        showAlert("Semua kolom puisi wajib diisi.", "error");
+        return;
     }
+
+    // Mengambil data puisi sebelumnya
+    const poems = getStorage(STORAGE_POEMS);
+
+    // Menyiapkan data puisi baru
+    const newPoem = {
+        id: Date.now(),
+        user_id: user.id,
+        judul: judul,
+        kategori: kategori,
+        keyword: keyword,
+        isi: isi,
+        tgl_submit: tgl_submit,
+        penulis: user.nama || user.username
+    };
+
+    // Menyimpan puisi
+    poems.push(newPoem);
+    saveStorage(STORAGE_POEMS, poems);
+
+    showAlert("Puisi berhasil disimpan.", "success");
+
+    formPuisi.reset();
+    setDefaultSubmitDate();
+
+    loadDaftarPuisi();
 });
 
-/**
- * 3. Aksi: Registrasi Pengguna Baru
- */
-formRegister.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    hideAlert();
 
-    const username = document.getElementById("reg-username").value.trim();
-    const nama = document.getElementById("reg-nama").value.trim();
-    const no_id = document.getElementById("reg-noid").value.trim();
-    const password = document.getElementById("reg-password").value;
+// ================= DAFTAR PUISI =================
 
-    try {
-        const response = await fetch(`${BACKEND_URL}?aksi=register`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ username, nama, no_id, password })
-        });
+function loadDaftarPuisi() {
+    const user = getCurrentUser();
 
-        const result = await response.json();
-
-        if (response.ok && result.status === "success") {
-            showAlert(result.message, "success");
-            formRegister.reset();
-            // Pindahkan tab ke login dan isi username otomatis
-            tabLogin.click();
-            document.getElementById("login-username").value = username;
-            document.getElementById("login-password").focus();
-        } else {
-            showAlert(result.message || "Gagal melakukan registrasi.", "error");
-        }
-    } catch (err) {
-        showAlert("Terjadi kesalahan koneksi saat registrasi.", "error");
-        console.error("Register error:", err);
-    }
-});
-
-/**
- * 4. Aksi: Submit Puisi Baru
- */
-formPuisi.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    hideAlert();
-
-    const judul = document.getElementById("puisi-judul").value.trim();
-    const kategori = document.getElementById("puisi-kategori").value;
-    const keyword = document.getElementById("puisi-keyword").value.trim();
-    const isi = document.getElementById("puisi-isi").value.trim();
-    const tgl_submit = document.getElementById("puisi-tgl-submit").value;
-
-    try {
-        const response = await fetch(`${BACKEND_URL}?aksi=submit_puisi`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({ judul, kategori, keyword, isi, tgl_submit })
-        });
-
-        const result = await response.json();
-
-        if (response.ok && result.status === "success") {
-            showAlert(result.message, "success");
-            formPuisi.reset();
-            setDefaultSubmitDate();
-            loadDaftarPuisi();
-        } else {
-            showAlert(result.message || "Gagal menyimpan karya puisi.", "error");
-            if (response.status === 401) {
-                setUnauthenticatedState();
-            }
-        }
-    } catch (err) {
-        showAlert("Terjadi kesalahan saat menyimpan puisi.", "error");
-        console.error("Submit puisi error:", err);
-    }
-});
-
-/**
- * 5. Aksi: Ambil Daftar Puisi
- */
-async function loadDaftarPuisi() {
-    puisiTbody.innerHTML = '<tr><td colspan="7" class="text-center">Memuat karya puisi terbaru...</td></tr>';
-
-    try {
-        const response = await fetch(`${BACKEND_URL}?aksi=daftar_puisi`, {
-            method: "GET",
-            credentials: "include"
-        });
-
-        if (response.status === 401) {
-            setUnauthenticatedState();
-            showAlert("Sesi telah habis. Silakan login kembali.", "error");
-            return;
-        }
-
-        const result = await response.json();
-
-        if (response.ok && result.status === "success" && Array.isArray(result.data)) {
-            if (result.data.length === 0) {
-                puisiTbody.innerHTML = '<tr><td colspan="7" class="text-center">Belum ada karya puisi. Mulailah menulis di atas!</td></tr>';
-                return;
-            }
-
-            puisiTbody.innerHTML = result.data.map((item, index) => `
-                <tr>
-                    <td><strong>${index + 1}</strong></td>
-                    <td><small>${escapeHtml(item.tgl_submit)}</small></td>
-                    <td><strong>${escapeHtml(item.judul)}</strong></td>
-                    <td>${escapeHtml(item.penulis || "-")}</td>
-                    <td><span class="badge">${escapeHtml(item.kategori)}</span></td>
-                    <td><code>${escapeHtml(item.keyword)}</code></td>
-                    <td><div class="poem-content-preview">${escapeHtml(item.isi)}</div></td>
-                </tr>
-            `).join("");
-        } else {
-            puisiTbody.innerHTML = `<tr><td colspan="7" class="text-center error-text">${escapeHtml(result.message || "Gagal memuat data")}</td></tr>`;
-        }
-    } catch (err) {
-        console.error("Load puisi error:", err);
-        puisiTbody.innerHTML = '<tr><td colspan="7" class="text-center">Gagal memuat data puisi. Silakan klik muat ulang.</td></tr>';
-    }
-}
-
-/**
- * 6. Aksi: Logout Pengguna
- */
-async function handleLogout() {
-    try {
-        await fetch(`${BACKEND_URL}?aksi=logout`, {
-            method: "POST",
-            credentials: "include"
-        });
-    } catch (err) {
-        console.warn("Logout request warning:", err);
-    } finally {
-        showAlert("Anda berhasil keluar dari sistem.", "info");
+    if (!user) {
         setUnauthenticatedState();
+        return;
     }
+
+    if (!puisiTbody) return;
+
+    const poems = getStorage(STORAGE_POEMS);
+
+    // Menampilkan puisi milik pengguna yang sedang login
+    const userPoems = poems.filter(
+        poem => poem.user_id === user.id
+    );
+
+    // Mengurutkan berdasarkan tanggal terbaru
+    userPoems.sort(
+        (a, b) => new Date(b.tgl_submit) - new Date(a.tgl_submit)
+    );
+
+    if (userPoems.length === 0) {
+        puisiTbody.innerHTML = `
+            <tr>
+                <td colspan="7" class="text-center">
+                    Belum ada karya puisi. Mulailah menulis di atas!
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    puisiTbody.innerHTML = userPoems.map((item, index) => `
+        <tr>
+            <td><strong>${index + 1}</strong></td>
+
+            <td>
+                <small>${escapeHtml(item.tgl_submit)}</small>
+            </td>
+
+            <td>
+                <strong>${escapeHtml(item.judul)}</strong>
+            </td>
+
+            <td>
+                ${escapeHtml(item.penulis || "-")}
+            </td>
+
+            <td>
+                <span class="badge">
+                    ${escapeHtml(item.kategori)}
+                </span>
+            </td>
+
+            <td>
+                <code>${escapeHtml(item.keyword)}</code>
+            </td>
+
+            <td>
+                <div class="poem-content-preview">
+                    ${escapeHtml(item.isi)}
+                </div>
+            </td>
+        </tr>
+    `).join("");
 }
+
+
+// ================= LOGOUT =================
+
+function handleLogout() {
+    localStorage.removeItem(STORAGE_SESSION);
+
+    showAlert("Anda berhasil keluar dari sistem.", "info");
+
+    setUnauthenticatedState();
+}
+
 
 btnLogout.addEventListener("click", handleLogout);
+
+
+// ================= REFRESH DAFTAR PUISI =================
+
 btnRefreshPuisi.addEventListener("click", loadDaftarPuisi);
 
-// ================= Inisialisasi Saat Halaman Dimuat =================
+
+// ================= INISIALISASI =================
+
 document.addEventListener("DOMContentLoaded", () => {
+    setDefaultSubmitDate();
     checkSession();
 });
